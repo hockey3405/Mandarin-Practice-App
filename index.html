@@ -5939,7 +5939,7 @@ const GRAMMAR_EXERCISES = {
   1: [
     {type:"reorder",level:1,pattern:"Subject + Verb + Object",words:["我","喝","茶"],answer:"我喝茶",answerPinyin:"wǒ hē chá",translation:"I drink tea.",hint:"Basic SVO order: Subject → Verb → Object"},
     {type:"reorder",level:1,pattern:"Subject + 是 + Noun",words:["我","是","学生"],answer:"我是学生",answerPinyin:"wǒ shì xuésheng",translation:"I am a student.",hint:"是 links subject to identity/category"},
-    {type:"reorder",level:1,pattern:"Subject + 有 + Object",words:["她","有","一个","猫"],answer:"她有一个猫",answerPinyin:"tā yǒu yīgè māo",translation:"She has a cat.",hint:"有 = to have; comes right after the subject"},
+    {type:"reorder",level:1,pattern:"Subject + 有 + Object",words:["她","有","一只","猫"],answer:"她有一只猫",answerPinyin:"tā yǒu yī zhī māo",translation:"She has a cat.",hint:"有 = to have; comes right after the subject. 只 is the measure word for animals like cats and dogs"},
     {type:"reorder",level:1,pattern:"在 + Location",words:["他","在","家"],answer:"他在家",answerPinyin:"tā zài jiā",translation:"He is at home.",hint:"在 + place = to be at a location"},
     {type:"reorder",level:1,pattern:"很 + Adjective",words:["天气","很","好"],answer:"天气很好",answerPinyin:"tiānqì hěn hǎo",translation:"The weather is good.",hint:"Chinese adjectives usually need 很 before them in basic sentences"},
     {type:"reorder",level:1,pattern:"不 + Verb (negation)",words:["我","不","喝","咖啡"],answer:"我不喝咖啡",answerPinyin:"wǒ bù hē kāfēi",translation:"I don't drink coffee.",hint:"不 goes directly before the verb to negate it"},
@@ -6283,7 +6283,8 @@ function getWeightedExercises(type) {
   const weighted = [];
   exs.forEach(ex => {
     const d = state.grammarData[grammarKey(ex)] || {streak:0};
-    const w = d.streak >= 2 ? 1 : d.streak === 1 ? 2 : 3;
+    if (d.streak >= 2) return; // mastered — exclude from active session
+    const w = d.streak === 1 ? 2 : 3;
     for (let i=0; i<w; i++) weighted.push(ex);
   });
   return shuffle(weighted);
@@ -6296,7 +6297,8 @@ function getWeightedSentences() {
   const weighted = [];
   exs.forEach(ex => {
     const d = state.sentenceData[sentenceKey(ex)] || {streak:0};
-    const w = d.streak >= 2 ? 1 : d.streak === 1 ? 2 : 3;
+    if (d.streak >= 2) return; // mastered — exclude from active session
+    const w = d.streak === 1 ? 2 : 3;
     for (let i=0; i<w; i++) weighted.push(ex);
   });
   return shuffle(weighted);
@@ -6650,6 +6652,7 @@ let grammarQueue = [];
 let grammarIdx = 0;
 let grammarAnswered = false;
 let grammarFilter = 'all';
+let currentExOptions = []; // the exact shuffled options array rendered for the current fill/error exercise
 // Reorder state
 let reorderAnswer = [];
 let reorderSource = [];
@@ -6665,7 +6668,17 @@ function renderGrammarExercise(el) {
   if (!el) el = document.getElementById('mainContent');
   const total = grammarQueue.length;
   if (total === 0) {
-    el.innerHTML = `<div class="grammar-screen"><div class="empty-state">
+    const lvl = state.currentLevel;
+    const allForLevel = GRAMMAR_EXERCISES[lvl] || [];
+    const filteredAll = grammarFilter === 'all' ? allForLevel : allForLevel.filter(e => e.type === grammarFilter);
+    const hasAnyExercises = filteredAll.length > 0;
+    el.innerHTML = hasAnyExercises
+      ? `<div class="grammar-screen"><div class="empty-state">
+      <div class="empty-icon">🎉</div>
+      <div class="empty-text">All done!</div>
+      <div class="empty-sub">You've mastered every grammar exercise in this category for HSK ${lvl}.<br>Come back later for spaced review, or switch categories above.</div>
+    </div></div>`
+      : `<div class="grammar-screen"><div class="empty-state">
       <div class="empty-icon">📝</div>
       <div class="empty-text">No exercises available</div>
       <div class="empty-sub">Unlock more levels to get more grammar exercises.</div>
@@ -6781,7 +6794,9 @@ function renderFillBody(ex) {
   const displaySentence = parts.map((p,i) =>
     i < parts.length-1 ? `${p}<span class="blank-slot" id="fillBlank${i}">___</span>` : p
   ).join('');
-  const optionsHTML = ex.options.map((opt,i) =>
+  if (!grammarAnswered) currentExOptions = shuffle([...ex.options]);
+  const options = currentExOptions;
+  const optionsHTML = options.map((opt,i) =>
     `<button class="option-btn" id="fillOpt${i}" onclick="checkFill('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`
   ).join('');
   const resultBanner = grammarAnswered ? getResultBanner(
@@ -6801,7 +6816,7 @@ function checkFill(chosen, idx) {
   const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
-  ex.options.forEach((opt, i) => {
+  currentExOptions.forEach((opt, i) => {
     const btn = document.getElementById('fillOpt'+i);
     if (!btn) return;
     if (opt === ex.answer) btn.classList.add('correct');
@@ -6820,7 +6835,9 @@ function checkFill(chosen, idx) {
   }
 }
 function renderErrorBody(ex) {
-  const optionsHTML = ex.options.map((opt,i) =>
+  if (!grammarAnswered) currentExOptions = shuffle([...ex.options]);
+  const options = currentExOptions;
+  const optionsHTML = options.map((opt,i) =>
     `<button class="option-btn" id="errOpt${i}" onclick="checkError('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`
   ).join('');
   return `
@@ -6835,7 +6852,7 @@ function checkError(chosen, idx) {
   const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
-  ex.options.forEach((opt, i) => {
+  currentExOptions.forEach((opt, i) => {
     const btn = document.getElementById('errOpt'+i);
     if (!btn) return;
     if (opt === ex.answer) btn.classList.add('correct');
@@ -6856,7 +6873,23 @@ function getResultBannerRaw(correct, ex) {
 }
 function getResultBanner(correct, ex) { return getResultBannerRaw(correct, ex); }
 function nextGrammar() {
-  grammarIdx++;
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const exKey = grammarKey(ex);
+  const exData = state.grammarData[exKey] || {streak:0};
+  const removeIdx = grammarIdx % grammarQueue.length;
+  if (exData.streak >= 2) {
+    // Mastered — purge every weighted duplicate of this exercise from the queue
+    grammarQueue = grammarQueue.filter(e => grammarKey(e) !== exKey);
+  } else {
+    // Not yet mastered — remove this occurrence and requeue a couple spots later
+    grammarQueue.splice(removeIdx, 1);
+    const insertAt = Math.min(grammarQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
+    grammarQueue.splice(insertAt, 0, ex);
+  }
+  if (grammarQueue.length === 0) {
+    grammarQueue = getWeightedExercises(grammarFilter);
+  }
+  if (grammarIdx >= grammarQueue.length) grammarIdx = 0;
   grammarAnswered = false;
   reorderAnswer = [];
   reorderSource = [];
@@ -7045,7 +7078,15 @@ function renderSentence(el) {
 function renderSentenceCard(el) {
   if (!el) el = document.getElementById('mainContent');
   if (!sentenceQueue.length) {
-    el.innerHTML = `<div class="sentence-screen"><div class="empty-state">
+    const lvl = state.currentLevel;
+    const hasAnyExercises = (SENTENCE_EXERCISES[lvl] || []).length > 0;
+    el.innerHTML = hasAnyExercises
+      ? `<div class="sentence-screen"><div class="empty-state">
+      <div class="empty-icon">🎉</div>
+      <div class="empty-text">All done!</div>
+      <div class="empty-sub">You've mastered every sentence exercise for HSK ${lvl}.<br>Come back later for spaced review.</div>
+    </div></div>`
+      : `<div class="sentence-screen"><div class="empty-state">
       <div class="empty-icon">✍️</div><div class="empty-text">No exercises yet</div>
     </div></div>`;
     return;
@@ -7121,7 +7162,21 @@ function showSentenceAnswer() {
   screen.insertAdjacentHTML('beforeend', renderSentenceResult(ex));
 }
 function nextSentence() {
-  sentenceIdx++;
+  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  const exKey = sentenceKey(ex);
+  const exData = state.sentenceData[exKey] || {streak:0};
+  const removeIdx = sentenceIdx % sentenceQueue.length;
+  if (exData.streak >= 2) {
+    sentenceQueue = sentenceQueue.filter(e => sentenceKey(e) !== exKey);
+  } else {
+    sentenceQueue.splice(removeIdx, 1);
+    const insertAt = Math.min(sentenceQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
+    sentenceQueue.splice(insertAt, 0, ex);
+  }
+  if (sentenceQueue.length === 0) {
+    sentenceQueue = getWeightedSentences();
+  }
+  if (sentenceIdx >= sentenceQueue.length) sentenceIdx = 0;
   sentenceAnswered = false;
   renderSentenceCard();
 }
@@ -7264,6 +7319,7 @@ function renderReviewListen(el, item, hdr) {
   state.unlockedLevels.forEach(lvl => getLevelAllWords(lvl).forEach(ww => allWords.push({...ww,level:lvl})));
   const distractors = shuffle(allWords.filter(ww => ww.char !== w.char)).slice(0,3);
   const options = shuffle([w, ...distractors]);
+  currentReviewListenOptions = options;
   const lisD = state.listenSrs[`listen_${item.lvl}_${w.char}`] || {ease:0};
   const lisLabel = ['New','Learning','Familiar','Mastered'][Math.min(3,lisD.ease)];
   el.innerHTML = hdr + `
@@ -7293,11 +7349,8 @@ function checkReviewListen(chosen, correct, idx) {
   reviewStats.listen++;
   if (isCorrect) reviewStats.correct++; else reviewStats.wrong++;
 
-  // Show result on buttons
-  const allWords = [];
-  state.unlockedLevels.forEach(lvl => getLevelAllWords(lvl).forEach(ww => allWords.push({...ww,level:lvl})));
-  const distractors = shuffle(allWords.filter(ww => ww.char !== item.word.char)).slice(0,3);
-  const options = shuffle([item.word, ...distractors]);
+  // Show result on buttons (use exactly what was rendered, don't reshuffle)
+  const options = currentReviewListenOptions;
   options.forEach((opt,i) => {
     const btn = document.getElementById('revLisOpt'+i);
     if (!btn) return;
@@ -7325,14 +7378,20 @@ function checkReviewListen(chosen, correct, idx) {
 // --- Review: Grammar ---
 let reviewReorderAnswer = [];
 let reviewReorderSource = [];
+let reviewReorderExKey = null; // tracks which exercise the current tiles belong to
+let currentReviewExOptions = []; // shuffled options for review fill/error exercises
+let reviewExOptionsKey = null; // tracks which exercise the current options belong to
+let currentReviewListenOptions = []; // the exact options array rendered for the current review listen card
 function renderReviewGrammar(el, item, hdr) {
   const ex = item.ex;
   const d = state.grammarData[grammarKey(ex)] || {streak:0};
   const streakDots = '●'.repeat(Math.min(2,d.streak))+'○'.repeat(Math.max(0,2-d.streak));
   const typeLabels = {reorder:'Reorder', fill:'Fill In', error:'Error Correction'};
-  if (!reviewAnswered) {
+  const exKey = grammarKey(ex);
+  if (!reviewAnswered && ex.type === 'reorder' && reviewReorderExKey !== exKey) {
     reviewReorderAnswer = [];
-    reviewReorderSource = ex.type === 'reorder' ? shuffle([...ex.words]) : [];
+    reviewReorderSource = shuffle([...ex.words]);
+    reviewReorderExKey = exKey;
   }
   let body = '';
   if (ex.type === 'reorder') body = renderReviewReorderBody(ex);
@@ -7353,7 +7412,12 @@ function renderReviewReorderBody(ex) {
   const answerTiles = reviewReorderAnswer.map((w,i)=>`<div class="tile" onclick="revReorderBack(${i})">${w}</div>`).join('')
     || `<span style="color:var(--gray-light);font-size:13px">Tap words to build the sentence</span>`;
   const sourceTiles = reviewReorderSource.map((w,i)=>`<div class="tile source" onclick="revReorderAdd(${i})">${w}</div>`).join('');
-  const result = reviewAnswered ? getResultBannerRaw(normalize(reviewReorderAnswer.join(''))===normalize(ex.answer), ex) : '';
+  const userJoined = normalize(reviewReorderAnswer.join(''));
+  let isCorrect = userJoined === normalize(ex.answer);
+  if (!isCorrect && ex.alternates) {
+    isCorrect = ex.alternates.some(alt => normalize(alt) === userJoined);
+  }
+  const result = reviewAnswered ? getResultBannerRaw(isCorrect, ex) : '';
   return `<div class="answer-zone-label">Your answer:</div>
     <div class="tiles-zone ${reviewReorderAnswer.length?'has-tiles':''}">${answerTiles}</div>
     <div class="tiles-zone" style="border-style:solid;border-color:var(--gray-light)">${sourceTiles}</div>
@@ -7370,7 +7434,11 @@ function revReorderBack(i) { if(reviewAnswered)return; reviewReorderSource.push(
 function revReorderClear() { const ex=reviewQueue[reviewIdx].ex; reviewReorderSource=shuffle([...ex.words]); reviewReorderAnswer=[]; renderReviewItem(); }
 function checkReviewReorder() {
   const ex = reviewQueue[reviewIdx].ex;
-  const correct = normalize(reviewReorderAnswer.join(''))===normalize(ex.answer);
+  const userJoined = normalize(reviewReorderAnswer.join(''));
+  let correct = userJoined === normalize(ex.answer);
+  if (!correct && ex.alternates) {
+    correct = ex.alternates.some(alt => normalize(alt) === userJoined);
+  }
   reviewAnswered = true;
   recordGrammar(ex, correct);
   reviewStats.grammar++;
@@ -7380,7 +7448,12 @@ function checkReviewReorder() {
 function renderReviewFillBody(ex) {
   const parts = ex.sentence.split('___');
   const sent = parts.map((p,i)=>i<parts.length-1?`${p}<span class="blank-slot" id="revFillBlank${i}">___</span>`:p).join('');
-  const opts = ex.options.map((opt,i)=>`<button class="option-btn" id="revFillOpt${i}" onclick="checkReviewFill('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`).join('');
+  const exKey = grammarKey(ex);
+  if (!reviewAnswered && reviewExOptionsKey !== exKey) {
+    currentReviewExOptions = shuffle([...ex.options]);
+    reviewExOptionsKey = exKey;
+  }
+  const opts = currentReviewExOptions.map((opt,i)=>`<button class="option-btn" id="revFillOpt${i}" onclick="checkReviewFill('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`).join('');
   return `<div class="fill-sentence">${sent}</div><div class="options-list">${opts}</div>`;
 }
 function checkReviewFill(chosen, idx) {
@@ -7391,7 +7464,7 @@ function checkReviewFill(chosen, idx) {
   recordGrammar(ex, correct);
   reviewStats.grammar++;
   if (correct) reviewStats.correct++; else reviewStats.wrong++;
-  ex.options.forEach((opt,i) => {
+  currentReviewExOptions.forEach((opt,i) => {
     const btn = document.getElementById('revFillOpt'+i);
     if (!btn) return;
     if (opt===ex.answer) btn.classList.add('correct');
@@ -7403,9 +7476,14 @@ function checkReviewFill(chosen, idx) {
   if (card) { card.insertAdjacentHTML('beforeend', `<div class="hint-text">💡 ${ex.hint}</div>${getResultBannerRaw(correct,ex)}<button class="action-btn btn-primary mt12" onclick="nextReviewItem()">Next →</button>`); }
 }
 function renderReviewErrorBody(ex) {
+  const exKey = grammarKey(ex);
+  if (!reviewAnswered && reviewExOptionsKey !== exKey) {
+    currentReviewExOptions = shuffle([...ex.options]);
+    reviewExOptionsKey = exKey;
+  }
   return `<div class="error-sentence">❌ ${ex.sentence}</div>
     <div class="ex-instruction" style="margin-bottom:12px">Choose the correct version:</div>
-    <div class="options-list">${ex.options.map((opt,i)=>`<button class="option-btn" id="revErrOpt${i}" onclick="checkReviewError('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`).join('')}</div>`;
+    <div class="options-list">${currentReviewExOptions.map((opt,i)=>`<button class="option-btn" id="revErrOpt${i}" onclick="checkReviewError('${opt.replace(/'/g,"\\'")}',${i})">${opt}</button>`).join('')}</div>`;
 }
 function checkReviewError(chosen, idx) {
   if (reviewAnswered) return;
@@ -7415,7 +7493,7 @@ function checkReviewError(chosen, idx) {
   recordGrammar(ex, correct);
   reviewStats.grammar++;
   if (correct) reviewStats.correct++; else reviewStats.wrong++;
-  ex.options.forEach((opt,i) => {
+  currentReviewExOptions.forEach((opt,i) => {
     const btn = document.getElementById('revErrOpt'+i);
     if (!btn) return;
     if (opt===ex.answer) btn.classList.add('correct');
@@ -7494,6 +7572,8 @@ function nextReviewItem() {
   reviewFlipped = false;
   reviewReorderAnswer = [];
   reviewReorderSource = [];
+  reviewReorderExKey = null;
+  reviewExOptionsKey = null;
   renderReviewItem();
 }
 
