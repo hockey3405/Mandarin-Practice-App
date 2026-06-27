@@ -86,7 +86,6 @@
   .level-pct { font-size: 13px; color: var(--gray); }
   .progress-bar { height: 6px; background: var(--paper2); border-radius: 3px; overflow: hidden; }
   .progress-fill { height: 100%; border-radius: 3px; background: var(--red); transition: width 0.5s ease; }
-  .locked-badge { font-size: 11px; color: var(--gray); background: var(--paper2); padding: 2px 8px; border-radius: 10px; }
   .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .mode-card {
     background: white; border-radius: 14px; padding: 16px;
@@ -294,7 +293,6 @@
   }
   .level-option:active { background: var(--paper2); }
   .level-option.active { border-color: var(--red); }
-  .level-option.locked { opacity: 0.4; pointer-events: none; }
   .level-opt-name { font-size: 16px; font-weight: 700; }
   .level-opt-count { font-size: 13px; color: var(--gray); }
   .level-opt-pct { font-size: 13px; font-weight: 700; color: var(--red); }
@@ -344,7 +342,6 @@
   .lvl-pip-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .lvl-pip { font-size: 11px; padding: 3px 8px; border-radius: 10px; background: var(--paper2); color: var(--gray); font-weight: 600; }
   .lvl-pip.done { background: #d5f5e3; color: var(--green); }
-  .lvl-pip.locked { opacity: 0.4; }
   .score-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
   .score-correct { background: #d5f5e3; color: var(--green); }
   .score-wrong { background: #fadbd8; color: var(--red); }
@@ -6053,8 +6050,9 @@ const SENTENCE_EXERCISES = {
 const STORAGE_KEY = 'hsk_progress_v8';
 let state = {
   currentLevel: 1,
-  unlockedLevels: [1],
+  unlockedLevels: [1,2,3,4,5,6],  // all levels always accessible
   currentUnit: {1:1, 2:1, 3:1, 4:1, 5:1, 6:1},  // current unit per level (1-indexed)
+  highestUnit: {1:1, 2:1, 3:1, 4:1, 5:1, 6:1},  // furthest unit reached per level (never decreases)
   srsData: {},
   listenSrs: {},
   grammarData: {},
@@ -6076,6 +6074,15 @@ function loadState() {
       state = {...state, ...parsed};
     }
   } catch(e){}
+  // Migration: initialize highestUnit from currentUnit for existing saves
+  if (!state.highestUnit) {
+    state.highestUnit = {};
+    [1,2,3,4,5,6].forEach(lvl => {
+      state.highestUnit[lvl] = state.currentUnit[lvl] || 1;
+    });
+  }
+  // Note: SRS keys changed from "lvl_char" to "lvl_char_pinyin" to fix homograph collisions.
+  // Homograph words (只, 得, 还, 过, 等, 长, 喂) will reset to unlearned for affected users — acceptable tradeoff.
   checkStreak();
   checkUnlocks();
 }
@@ -6100,6 +6107,13 @@ function markStudied() {
 function getLevelUnits(lvl) {
   return (HSK_DATA[lvl] && HSK_DATA[lvl].units) || [];
 }
+// SRS key always includes pinyin to handle homographs (same char, different tone/meaning)
+function wordKey(lvl, word) {
+  return `${lvl}_${word.char}_${word.pinyin}`;
+}
+function listenKey(lvl, word) {
+  return `listen_${lvl}_${word.char}_${word.pinyin}`;
+}
 function getLevelAllWords(lvl) {
   const units = getLevelUnits(lvl);
   return units.flat();
@@ -6118,7 +6132,7 @@ function isUnitMastered(lvl, unitNum) {
   const words = getUnitWords(lvl, unitNum);
   if (words.length === 0) return false;
   const mastered = words.filter(w => {
-    const d = state.srsData[`${lvl}_${w.char}`];
+    const d = state.srsData[wordKey(lvl,w)];
     return d && d.reps >= 2;
   }).length;
   return (mastered / words.length) >= 0.80;
@@ -6127,7 +6141,7 @@ function isListenUnitMastered(lvl, unitNum) {
   const words = getUnitWords(lvl, unitNum);
   if (words.length === 0) return false;
   const mastered = words.filter(w => {
-    const d = state.listenSrs[`listen_${lvl}_${w.char}`];
+    const d = state.listenSrs[listenKey(lvl,w)];
     return d && d.reps >= 2;
   }).length;
   return (mastered / words.length) >= 0.80;
@@ -6136,7 +6150,7 @@ function unitProgress(lvl, unitNum) {
   const words = getUnitWords(lvl, unitNum);
   if (words.length === 0) return {mastered:0, total:0};
   const mastered = words.filter(w => {
-    const d = state.srsData[`${lvl}_${w.char}`];
+    const d = state.srsData[wordKey(lvl,w)];
     return d && d.reps >= 2;
   }).length;
   return {mastered, total: words.length};
@@ -6145,7 +6159,7 @@ function listenUnitProgress(lvl, unitNum) {
   const words = getUnitWords(lvl, unitNum);
   if (words.length === 0) return {mastered:0, total:0};
   const mastered = words.filter(w => {
-    const d = state.listenSrs[`listen_${lvl}_${w.char}`];
+    const d = state.listenSrs[listenKey(lvl,w)];
     return d && d.reps >= 2;
   }).length;
   return {mastered, total: words.length};
@@ -6160,34 +6174,20 @@ function isLevelFullyMastered(lvl) {
 }
 
 // Check unit unlocks within current level: advance currentUnit if current is mastered
-function checkUnitUnlock() {
-  const lvl = state.currentLevel;
-  const cur = getCurrentUnit(lvl);
-  const total = getUnitCount(lvl);
-  if (cur < total && isUnitMastered(lvl, cur)) {
-    state.currentUnit[lvl] = cur + 1;
-    saveState();
-  }
-}
-
 function checkUnlocks() {
+  // All levels are always unlocked — no mastery gate
   [1,2,3,4,5,6].forEach(lvl => {
-    if (lvl === 1) { if (!state.unlockedLevels.includes(1)) state.unlockedLevels.push(1); return; }
-    const prev = lvl-1;
-    if (getUnitCount(prev) === 0) return;
-    if (isLevelFullyMastered(prev) && !state.unlockedLevels.includes(lvl)) {
-      state.unlockedLevels.push(lvl);
-      if (!state.currentUnit[lvl]) state.currentUnit[lvl] = 1;
-      saveState();
-    }
+    if (!state.unlockedLevels.includes(lvl)) state.unlockedLevels.push(lvl);
+    if (!state.currentUnit[lvl]) state.currentUnit[lvl] = 1;
+    if (!state.highestUnit) state.highestUnit = {1:1,2:1,3:1,4:1,5:1,6:1};
+    if (!state.highestUnit[lvl]) state.highestUnit[lvl] = 1;
   });
-  checkUnitUnlock();
 }
 function getLevelMastery(lvl) {
   const words = getLevelAllWords(lvl);
   if (!words.length) return 0;
   const mastered = words.filter(w => {
-    const d = state.srsData[`${lvl}_${w.char}`];
+    const d = state.srsData[wordKey(lvl,w)];
     return d && d.reps >= 2;
   }).length;
   return mastered / words.length;
@@ -6203,16 +6203,16 @@ function getMasteryStats() {
   let grammarTotal=0, grammarMastered=0;
   let sentenceTotal=0, sentenceMastered=0;
 
-  state.unlockedLevels.forEach(lvl => {
+  [1,2,3,4,5,6].forEach(lvl => {
     const words = getLevelAllWords(lvl);
     vocabTotal += words.length;
     vocabMastered += words.filter(w => {
-      const d = state.srsData[`${lvl}_${w.char}`];
+      const d = state.srsData[wordKey(lvl,w)];
       return d && d.reps >= 2;
     }).length;
     listenTotal += words.length;
     listenMastered += words.filter(w => {
-      const d = state.listenSrs[`listen_${lvl}_${w.char}`];
+      const d = state.listenSrs[listenKey(lvl,w)];
       return d && d.reps >= 2;
     }).length;
     const exs = GRAMMAR_EXERCISES[lvl] || [];
@@ -6247,7 +6247,7 @@ function getDueCards(level) {
 function rateCard(level, word, rating) {
   // rating: 0=again, 1=hard, 2=easy
   // reps tracks consecutive correct answers; mastered when reps>=2
-  const key = `${level}_${word.char}`;
+  const key = wordKey(level, word);
   const d = state.srsData[key] || {ease:0, nextRep:0, reps:0};
   const intervals = [10, 1440, 4320, 10080]; // minutes: wrong, 1st correct, mastered, long-term
   if (rating === 0) {
@@ -6271,14 +6271,14 @@ function getListenDueCards(level) {
   const words = getLevelAllWords(level);
   const now = Date.now();
   const due = words.filter(w => {
-    const d = state.listenSrs[`listen_${level}_${w.char}`];
+    const d = state.listenSrs[listenKey(level, w)];
     if (!d) return true;
     return now >= (d.nextRep || 0);
   });
   return shuffle(due);
 }
 function rateListenCard(level, word, correct) {
-  const key = `listen_${level}_${word.char}`;
+  const key = listenKey(level, word);
   const d = state.listenSrs[key] || {ease:0, nextRep:0, reps:0};
   const intervals = [10, 1440, 4320, 10080];
   if (!correct) {
@@ -6352,32 +6352,31 @@ function getDueReviewItems() {
   const now = Date.now();
   const items = [];
 
-  state.unlockedLevels.forEach(lvl => {
-    // Vocab due: only words that have been mastered (reps>=2) and are scheduled for review
+  // Review covers all levels where the user has studied anything
+  const studiedLevels = [1,2,3,4,5,6].filter(lvl => {
+    const words = getLevelAllWords(lvl);
+    return words.some(w => state.srsData[wordKey(lvl,w)] || state.listenSrs[listenKey(lvl,w)]);
+  });
+
+  studiedLevels.forEach(lvl => {
     getLevelAllWords(lvl).forEach(w => {
-      const d = state.srsData[`${lvl}_${w.char}`];
+      const d = state.srsData[wordKey(lvl,w)];
       if (d && d.reps >= 2 && now >= (d.nextRep||0)) {
         items.push({kind:'vocab', lvl, word:w});
       }
     });
-
-    // Listen due: same threshold
     getLevelAllWords(lvl).forEach(w => {
-      const d = state.listenSrs[`listen_${lvl}_${w.char}`];
+      const d = state.listenSrs[listenKey(lvl,w)];
       if (d && d.reps >= 2 && now >= (d.nextRep||0)) {
         items.push({kind:'listen', lvl, word:{...w,level:lvl}});
       }
     });
-
-    // Grammar due: only exercises with streak>=2 that are scheduled
     (GRAMMAR_EXERCISES[lvl]||[]).forEach(ex => {
       const d = state.grammarData[grammarKey(ex)];
       if (d && d.streak >= 2 && now >= (d.nextRep||0)) {
         items.push({kind:'grammar', lvl, ex});
       }
     });
-
-    // Sentences due: same
     (SENTENCE_EXERCISES[lvl]||[]).forEach(ex => {
       const d = state.sentenceData[sentenceKey(ex)];
       if (d && d.streak >= 2 && now >= (d.nextRep||0)) {
@@ -6421,10 +6420,23 @@ function speakChinese(text) {
   utt.rate = 0.85;
   utt.pitch = 1;
   const voices = window.speechSynthesis.getVoices();
-  const zhVoice = voices.find(v => v.lang.startsWith('zh'));
-  if (zhVoice) utt.voice = zhVoice;
+  // Prefer zh-CN voices; fall back to any zh voice if zh-CN not available
+  const zhCN = voices.find(v => v.lang === 'zh-CN') ||
+               voices.find(v => v.lang.startsWith('zh-CN')) ||
+               voices.find(v => v.lang === 'zh') ||
+               voices.find(v => v.lang.startsWith('zh'));
+  if (zhCN) utt.voice = zhCN;
   window.speechSynthesis.speak(utt);
   return utt;
+}
+let _pendingSpeak = null;
+function speakDelayed(char, delayMs) {
+  // Cancel any previous pending auto-play to avoid speaking stale words
+  if (_pendingSpeak) { clearTimeout(_pendingSpeak); _pendingSpeak = null; }
+  _pendingSpeak = setTimeout(() => {
+    _pendingSpeak = null;
+    speakChinese(char);
+  }, delayMs);
 }
 
 // ===== NAVIGATION =====
@@ -6452,26 +6464,23 @@ function renderPage(page) {
 function renderHome(el) {
   // Per-level stats for each mode
   function levelStats(lvl) {
-    const locked = !state.unlockedLevels.includes(lvl);
     const words = getLevelAllWords(lvl);
     const exs = GRAMMAR_EXERCISES[lvl] || [];
     const sents = SENTENCE_EXERCISES[lvl] || [];
-    if (locked) return {locked, vocabM:0, vocabT:words.length, listenM:0, listenT:words.length, grammarM:0, grammarT:exs.length, sentM:0, sentT:sents.length, unitsM:0, unitsT:getUnitCount(lvl)};
-    const vocabM = words.filter(w => { const d=state.srsData[`${lvl}_${w.char}`]; return d&&d.reps>=2; }).length;
-    const listenM = words.filter(w => { const d=state.listenSrs[`listen_${lvl}_${w.char}`]; return d&&d.reps>=2; }).length;
+    const vocabM = words.filter(w => { const d=state.srsData[wordKey(lvl,w)]; return d&&d.reps>=2; }).length;
+    const listenM = words.filter(w => { const d=state.listenSrs[listenKey(lvl,w)]; return d&&d.reps>=2; }).length;
     const grammarM = exs.filter(ex => { const d=state.grammarData[grammarKey(ex)]; return d&&d.streak>=2; }).length;
     const sentM = sents.filter(ex => { const d=state.sentenceData[sentenceKey(ex)]; return d&&d.streak>=2; }).length;
     const unitsT = getUnitCount(lvl);
     let unitsM = 0;
     for (let u=1; u<=unitsT; u++) { if (isUnitMastered(lvl, u)) unitsM++; }
-    return {locked, vocabM, vocabT:words.length, listenM, listenT:words.length, grammarM, grammarT:exs.length, sentM, sentT:sents.length, unitsM, unitsT};
+    return {locked:false, vocabM, vocabT:words.length, listenM, listenT:words.length, grammarM, grammarT:exs.length, sentM, sentT:sents.length, unitsM, unitsT};
   }
 
   const levels = [1,2,3,4,5,6].map(lvl => ({lvl, ...levelStats(lvl)}));
 
   function levelPips(field, masteredField, totalField) {
     return levels.map(s => {
-      if (s.locked) return `<span class="lvl-pip locked">HSK ${s.lvl} 🔒</span>`;
       const m = s[masteredField], t = s[totalField];
       const done = m === t;
       return `<span class="lvl-pip ${done?'done':''}" title="HSK ${s.lvl}">HSK ${s.lvl}: ${m}/${t}</span>`;
@@ -6494,8 +6503,8 @@ function renderHome(el) {
   }
 
   function modeBar(icon, cn, title, masteredField, totalField, page) {
-    const mastered = levels.filter(s=>!s.locked).reduce((sum,s)=>sum+s[masteredField],0);
-    const total    = levels.filter(s=>!s.locked).reduce((sum,s)=>sum+s[totalField],0);
+    const mastered = levels.reduce((sum,s)=>sum+s[masteredField],0);
+    const total    = levels.reduce((sum,s)=>sum+s[totalField],0);
     const pct = total ? Math.round(mastered/total*100) : 0;
     return `<div class="mode-progress-card" onclick="navigate('${page}')">
       <div class="mode-progress-top">
@@ -6546,17 +6555,14 @@ let vocabDeck = [];
 let vocabIdx = 0;
 let vocabFlipped = false;
 function unitSelectorHTML(lvl, mode) {
-  // mode: 'vocab' or 'listen'
   const cur = getCurrentUnit(lvl);
   const total = getUnitCount(lvl);
   const isListen = mode === 'listen';
   const prog = isListen ? listenUnitProgress(lvl, cur) : unitProgress(lvl, cur);
-  const canPrev = cur > 1;
-  const canNext = cur < total && (isListen ? isListenUnitMastered(lvl, cur) : isUnitMastered(lvl, cur));
   return `<div class="unit-selector">
-    <button class="unit-nav-btn" onclick="changeUnit(-1,'${mode}')" ${canPrev?'':'disabled'}>‹</button>
+    <button class="unit-nav-btn" onclick="changeUnit(-1,'${mode}')" ${cur > 1 ? '' : 'disabled'}>‹</button>
     <span class="unit-selector-label">Unit ${cur} / ${total} &nbsp; (${prog.mastered}/${prog.total} mastered)</span>
-    <button class="unit-nav-btn" onclick="changeUnit(1,'${mode}')" ${canNext?'':'disabled'}>›</button>
+    <button class="unit-nav-btn" onclick="changeUnit(1,'${mode}')" ${cur < total ? '' : 'disabled'}>›</button>
   </div>`;
 }
 function changeUnit(delta, mode) {
@@ -6565,8 +6571,8 @@ function changeUnit(delta, mode) {
   const total = getUnitCount(lvl);
   const target = cur + delta;
   if (target < 1 || target > total) return;
-  const isListen = mode === 'listen';
-  if (delta > 0 && !(isListen ? isListenUnitMastered(lvl, cur) : isUnitMastered(lvl, cur))) return;
+  if (!state.highestUnit) state.highestUnit = {1:1,2:1,3:1,4:1,5:1,6:1};
+  if (target > (state.highestUnit[lvl] || 1)) state.highestUnit[lvl] = target;
   state.currentUnit[lvl] = target;
   saveState();
   navigate(currentPage);
@@ -6581,7 +6587,7 @@ function renderVocab(el) {
 
 // A word counts as "done for this session" once it has reps>=2 (mastered).
 function isWordSessionDone(level, word) {
-  const d = state.srsData[`${level}_${word.char}`];
+  const d = state.srsData[wordKey(level, word)];
   return d && d.reps >= 2;
 }
 // Build the next session queue: any unit words not yet mastered this round.
@@ -6607,7 +6613,7 @@ function renderVocabCard(el) {
   }
   const word = vocabDeck[vocabIdx];
   const pct = Math.round((vocabIdx / total) * 100);
-  const srsD = state.srsData[`${state.currentLevel}_${word.char}`] || {reps:0};
+  const srsD = state.srsData[wordKey(state.currentLevel, word)] || {reps:0};
   const repsDots = '●'.repeat(Math.min(2,srsD.reps)) + '○'.repeat(Math.max(0,2-srsD.reps));
   const flipContent = vocabFlipped
     ? `<div class="reveal-content">
@@ -6673,46 +6679,47 @@ let grammarQueue = [];
 let grammarIdx = 0;
 let grammarAnswered = false;
 let grammarFilter = 'all';
+let grammarBrowseIdx = 0;  // index into all exercises for free navigation
 let currentExOptions = []; // the exact shuffled options array rendered for the current fill/error exercise
 // Reorder state
 let reorderAnswer = [];
 let reorderSource = [];
 
+function getAllExercises(type) {
+  const lvl = state.currentLevel;
+  const all = GRAMMAR_EXERCISES[lvl] || [];
+  return type === 'all' ? all : all.filter(e => e.type === type);
+}
 function renderGrammar(el) {
   if (!el) el = document.getElementById('mainContent');
-  grammarQueue = getExercises(grammarFilter);
-  grammarIdx = 0;
   grammarAnswered = false;
+  reorderAnswer = [];
+  reorderSource = [];
+  currentExOptions = [];
   renderGrammarExercise(el);
 }
 function renderGrammarExercise(el) {
   if (!el) el = document.getElementById('mainContent');
-  const total = grammarQueue.length;
-  if (total === 0) {
-    const lvl = state.currentLevel;
-    const allForLevel = GRAMMAR_EXERCISES[lvl] || [];
-    const filteredAll = grammarFilter === 'all' ? allForLevel : allForLevel.filter(e => e.type === grammarFilter);
-    const hasAnyExercises = filteredAll.length > 0;
-    el.innerHTML = hasAnyExercises
-      ? `<div class="grammar-screen"><div class="empty-state">
-      <div class="empty-icon">🎉</div>
-      <div class="empty-text">All done!</div>
-      <div class="empty-sub">You've mastered every grammar exercise in this category for HSK ${lvl}.<br>Come back later for spaced review, or switch categories above.</div>
-    </div></div>`
-      : `<div class="grammar-screen"><div class="empty-state">
+  const lvl = state.currentLevel;
+  const allExs = getAllExercises(grammarFilter);
+  if (allExs.length === 0) {
+    el.innerHTML = `<div class="grammar-screen"><div class="empty-state">
       <div class="empty-icon">📝</div>
       <div class="empty-text">No exercises available</div>
-      <div class="empty-sub">Unlock more levels to get more grammar exercises.</div>
+      <div class="empty-sub">No ${grammarFilter === 'all' ? '' : grammarFilter + ' '}exercises for HSK ${lvl}.</div>
     </div></div>`;
     return;
   }
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  // Clamp browse index to valid range
+  if (grammarBrowseIdx >= allExs.length) grammarBrowseIdx = allExs.length - 1;
+  if (grammarBrowseIdx < 0) grammarBrowseIdx = 0;
+  const ex = allExs[grammarBrowseIdx];
+  const total = allExs.length;
   const typeLabels = {reorder:'Reorder', fill:'Fill In', error:'Error Correction'};
   const typeColors = {reorder:'reorder', fill:'fill', error:'error'};
   const filterBtns = ['all','reorder','fill','error'].map(t =>
     `<button class="ex-chip ${typeColors[t]||'reorder'} ${grammarFilter===t?'active':'inactive'}" onclick="setGrammarFilter('${t}')">${t==='all'?'All':typeLabels[t]}</button>`
   ).join('');
-  // streak badge for current exercise
   const exData = state.grammarData[grammarKey(ex)] || {streak:0};
   const streakDots = '●'.repeat(Math.min(2,exData.streak)) + '○'.repeat(Math.max(0,2-exData.streak));
   const mStats = getMasteryStats();
@@ -6737,21 +6744,35 @@ function renderGrammarExercise(el) {
       <span class="score-badge score-correct">${mStats.grammarMastered}/${mStats.grammarTotal}</span>
     </div>
     <div class="ex-type-row">${filterBtns}</div>
+    <div class="unit-selector" style="margin-bottom:12px">
+      <button class="unit-nav-btn" onclick="browseGrammar(-1)" ${grammarBrowseIdx > 0 ? '' : 'disabled'}>‹</button>
+      <span class="unit-selector-label">Exercise ${grammarBrowseIdx+1} / ${total} &nbsp; <span style="letter-spacing:2px">${streakDots}</span></span>
+      <button class="unit-nav-btn" onclick="browseGrammar(1)" ${grammarBrowseIdx < total-1 ? '' : 'disabled'}>›</button>
+    </div>
     <div class="exercise-card">
-      <div class="ex-pattern">${ex.pattern} <span style="float:right;font-size:13px;color:var(--gray);letter-spacing:2px">${streakDots}</span></div>
+      <div class="ex-pattern">${ex.pattern}</div>
       <div class="ex-instruction">${typeLabels[ex.type]} · HSK ${ex.level}</div>
       <div class="ex-translation">${ex.translation}</div>
       ${exBody}
     </div>
   </div>`;
 }
-function setGrammarFilter(f) {
-  grammarFilter = f;
-  grammarIdx = 0;
+function browseGrammar(delta) {
+  const allExs = getAllExercises(grammarFilter);
+  grammarBrowseIdx = Math.max(0, Math.min(allExs.length - 1, grammarBrowseIdx + delta));
   grammarAnswered = false;
   reorderAnswer = [];
   reorderSource = [];
-  grammarQueue = getExercises(f);
+  currentExOptions = [];
+  renderGrammarExercise();
+}
+function setGrammarFilter(f) {
+  grammarFilter = f;
+  grammarBrowseIdx = 0;
+  grammarAnswered = false;
+  reorderAnswer = [];
+  reorderSource = [];
+  currentExOptions = [];
   renderGrammarExercise();
 }
 function renderReorderBody(ex) {
@@ -6794,14 +6815,14 @@ function reorderMoveBack(idx) {
   renderGrammarExercise();
 }
 function clearReorder() {
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
   reorderSource = shuffle([...ex.words]);
   reorderAnswer = [];
   renderGrammarExercise();
 }
 function checkReorder() {
   grammarAnswered = true;
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
   const userJoined = normalize(reorderAnswer.join(''));
   let correct = userJoined === normalize(ex.answer);
   if (!correct && ex.alternates) {
@@ -6834,7 +6855,7 @@ function renderFillBody(ex) {
 function checkFill(chosen, idx) {
   if (grammarAnswered) return;
   grammarAnswered = true;
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
   currentExOptions.forEach((opt, i) => {
@@ -6870,7 +6891,7 @@ function renderErrorBody(ex) {
 function checkError(chosen, idx) {
   if (grammarAnswered) return;
   grammarAnswered = true;
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
   currentExOptions.forEach((opt, i) => {
@@ -6894,27 +6915,7 @@ function getResultBannerRaw(correct, ex) {
 }
 function getResultBanner(correct, ex) { return getResultBannerRaw(correct, ex); }
 function nextGrammar() {
-  const ex = grammarQueue[grammarIdx % grammarQueue.length];
-  const exKey = grammarKey(ex);
-  const exData = state.grammarData[exKey] || {streak:0};
-  const removeIdx = grammarIdx % grammarQueue.length;
-  if (exData.streak >= 2) {
-    // Mastered — purge every weighted duplicate of this exercise from the queue
-    grammarQueue = grammarQueue.filter(e => grammarKey(e) !== exKey);
-  } else {
-    // Not yet mastered — remove this occurrence and requeue a couple spots later
-    grammarQueue.splice(removeIdx, 1);
-    const insertAt = Math.min(grammarQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
-    grammarQueue.splice(insertAt, 0, ex);
-  }
-  if (grammarQueue.length === 0) {
-    grammarQueue = getWeightedExercises(grammarFilter);
-  }
-  if (grammarIdx >= grammarQueue.length) grammarIdx = 0;
-  grammarAnswered = false;
-  reorderAnswer = [];
-  reorderSource = [];
-  renderGrammarExercise();
+  browseGrammar(1);
 }
 
 // ===== LISTENING =====
@@ -6926,7 +6927,7 @@ let currentListenOptions = []; // the exact options array rendered for the curre
 
 // A word counts as "done for this session" (listening) once reps>=2.
 function isListenSessionDone(level, word) {
-  const d = state.listenSrs[`listen_${level}_${word.char}`];
+  const d = state.listenSrs[listenKey(level, word)];
   return d && d.reps >= 2;
 }
 function getListenWords() {
@@ -6945,8 +6946,16 @@ function refillListenQueue(level) {
     .map(w => ({...w, level}));
   return shuffle(words);
 }
+function normalizePinyin(p) {
+  return p.toLowerCase()
+    .replace(/[āáǎà]/g,'a').replace(/[ēéěè]/g,'e').replace(/[īíǐì]/g,'i')
+    .replace(/[ōóǒò]/g,'o').replace(/[ūúǔù]/g,'u').replace(/[ǖǘǚǜ]/g,'u')
+    .replace(/\s+/g,'');
+}
 function getDistractors(correct, allWords, n) {
-  const pool = allWords.filter(w => w.char !== correct.char);
+  const correctNorm = normalizePinyin(correct.pinyin);
+  // Exclude same char AND same-sounding (same normalized pinyin) words — they'd be indistinguishable
+  const pool = allWords.filter(w => w.char !== correct.char && normalizePinyin(w.pinyin) !== correctNorm);
   return shuffle(pool).slice(0, n);
 }
 // Pool for distractors: all words across unlocked units of the current level (falls back to whole level)
@@ -6959,6 +6968,8 @@ function getDistractorPool(lvl) {
 }
 function renderListen(el) {
   if (!el) el = document.getElementById('mainContent');
+  if (_pendingSpeak) { clearTimeout(_pendingSpeak); _pendingSpeak = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
   listenQueue = getListenWords();
   listenIdx = 0;
   listenAnswered = false;
@@ -7015,7 +7026,7 @@ function renderListenCard(el) {
     </div>
     ${listenAnswered ? `<button class="action-btn btn-primary mt12" onclick="nextListen()">Next →</button>` : ''}
   </div>`;
-  if (listenMode === 'hear') setTimeout(() => playWord(word.char), 400);
+  if (listenMode === 'hear') speakDelayed(word.char, 300);
 }
 function setListenMode(m) {
   listenMode = m;
@@ -7089,30 +7100,26 @@ function nextListen() {
 let sentenceQueue = [];
 let sentenceIdx = 0;
 let sentenceAnswered = false;
+let sentenceBrowseIdx = 0;  // index into all sentences for free navigation
 function renderSentence(el) {
   if (!el) el = document.getElementById('mainContent');
-  sentenceQueue = getSentenceExercises();
-  sentenceIdx = 0;
   sentenceAnswered = false;
   renderSentenceCard(el);
 }
 function renderSentenceCard(el) {
   if (!el) el = document.getElementById('mainContent');
-  if (!sentenceQueue.length) {
-    const lvl = state.currentLevel;
-    const hasAnyExercises = (SENTENCE_EXERCISES[lvl] || []).length > 0;
-    el.innerHTML = hasAnyExercises
-      ? `<div class="sentence-screen"><div class="empty-state">
-      <div class="empty-icon">🎉</div>
-      <div class="empty-text">All done!</div>
-      <div class="empty-sub">You've mastered every sentence exercise for HSK ${lvl}.<br>Come back later for spaced review.</div>
-    </div></div>`
-      : `<div class="sentence-screen"><div class="empty-state">
+  const lvl = state.currentLevel;
+  const allExs = SENTENCE_EXERCISES[lvl] || [];
+  if (allExs.length === 0) {
+    el.innerHTML = `<div class="sentence-screen"><div class="empty-state">
       <div class="empty-icon">✍️</div><div class="empty-text">No exercises yet</div>
     </div></div>`;
     return;
   }
-  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  if (sentenceBrowseIdx >= allExs.length) sentenceBrowseIdx = allExs.length - 1;
+  if (sentenceBrowseIdx < 0) sentenceBrowseIdx = 0;
+  const ex = allExs[sentenceBrowseIdx];
+  const total = allExs.length;
   const mStats = getMasteryStats();
   const exData = state.sentenceData[sentenceKey(ex)] || {streak:0};
   const streakDots = '●'.repeat(Math.min(2,exData.streak)) + '○'.repeat(Math.max(0,2-exData.streak));
@@ -7122,8 +7129,13 @@ function renderSentenceCard(el) {
       <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(mStats.sentenceMastered/Math.max(1,mStats.sentenceTotal)*100)}%"></div></div>
       <span class="score-badge score-correct">${mStats.sentenceMastered}/${mStats.sentenceTotal}</span>
     </div>
+    <div class="unit-selector" style="margin-bottom:12px">
+      <button class="unit-nav-btn" onclick="browseSentence(-1)" ${sentenceBrowseIdx > 0 ? '' : 'disabled'}>‹</button>
+      <span class="unit-selector-label">Exercise ${sentenceBrowseIdx+1} / ${total} &nbsp; <span style="letter-spacing:2px">${streakDots}</span></span>
+      <button class="unit-nav-btn" onclick="browseSentence(1)" ${sentenceBrowseIdx < total-1 ? '' : 'disabled'}>›</button>
+    </div>
     <div class="sentence-prompt">
-      <div class="prompt-label">Translate to Chinese <span style="float:right;letter-spacing:2px;color:var(--gray)">${streakDots}</span></div>
+      <div class="prompt-label">Translate to Chinese</div>
       <div class="prompt-english">${ex.english}</div>
       <div class="prompt-hint">💡 ${ex.hint}</div>
     </div>
@@ -7138,6 +7150,13 @@ function renderSentenceCard(el) {
     setTimeout(() => { const inp = document.getElementById('chineseInput'); if(inp) inp.focus(); }, 100);
   }
 }
+function browseSentence(delta) {
+  const lvl = state.currentLevel;
+  const allExs = SENTENCE_EXERCISES[lvl] || [];
+  sentenceBrowseIdx = Math.max(0, Math.min(allExs.length - 1, sentenceBrowseIdx + delta));
+  sentenceAnswered = false;
+  renderSentenceCard();
+}
 function renderSentenceResult(ex) {
   return `<div class="answer-reveal">
     <div class="answer-label">✓ Model Answer</div>
@@ -7150,13 +7169,14 @@ function renderSentenceResult(ex) {
 function checkSentence() {
   const inp = document.getElementById('chineseInput');
   if (!inp || !inp.value.trim()) return;
-  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  const lvl = state.currentLevel;
+  const ex = (SENTENCE_EXERCISES[lvl] || [])[sentenceBrowseIdx];
+  if (!ex) return;
   const correct = checkAnswer(inp.value, ex);
   sentenceAnswered = true;
   recordSentence(ex, correct);
   const screen = document.querySelector('.sentence-screen');
   if (!screen) return;
-  // Replace input area
   const inputArea = screen.querySelector('textarea');
   const checkBtn = screen.querySelector('.btn-check');
   const showBtn = screen.querySelector('.btn-secondary');
@@ -7171,7 +7191,9 @@ function checkSentence() {
 }
 function showSentenceAnswer() {
   sentenceAnswered = true;
-  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  const lvl = state.currentLevel;
+  const ex = (SENTENCE_EXERCISES[lvl] || [])[sentenceBrowseIdx];
+  if (!ex) return;
   const screen = document.querySelector('.sentence-screen');
   if (!screen) return;
   const inputArea = screen.querySelector('textarea');
@@ -7183,23 +7205,7 @@ function showSentenceAnswer() {
   screen.insertAdjacentHTML('beforeend', renderSentenceResult(ex));
 }
 function nextSentence() {
-  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
-  const exKey = sentenceKey(ex);
-  const exData = state.sentenceData[exKey] || {streak:0};
-  const removeIdx = sentenceIdx % sentenceQueue.length;
-  if (exData.streak >= 2) {
-    sentenceQueue = sentenceQueue.filter(e => sentenceKey(e) !== exKey);
-  } else {
-    sentenceQueue.splice(removeIdx, 1);
-    const insertAt = Math.min(sentenceQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
-    sentenceQueue.splice(insertAt, 0, ex);
-  }
-  if (sentenceQueue.length === 0) {
-    sentenceQueue = getWeightedSentences();
-  }
-  if (sentenceIdx >= sentenceQueue.length) sentenceIdx = 0;
-  sentenceAnswered = false;
-  renderSentenceCard();
+  browseSentence(1);
 }
 
 // ===== LEVEL MODAL =====
@@ -7207,17 +7213,16 @@ function showLevelModal() {
   const modal = document.getElementById('levelModal');
   const opts = document.getElementById('levelOptions');
   opts.innerHTML = [1,2,3,4,5,6].map(lvl => {
-    const locked = !state.unlockedLevels.includes(lvl);
     const pct = Math.round(getLevelMastery(lvl)*100);
     const words = getLevelAllWords(lvl);
     const unitsT = getUnitCount(lvl);
     const curUnit = getCurrentUnit(lvl);
-    return `<div class="level-option ${state.currentLevel===lvl?'active':''} ${locked?'locked':''}" onclick="selectLevel(${lvl})">
+    return `<div class="level-option ${state.currentLevel===lvl?'active':''}" onclick="selectLevel(${lvl})">
       <div>
         <div class="level-opt-name">HSK ${lvl}</div>
-        <div class="level-opt-count">${words.length} words · ${unitsT} units${locked?' · 🔒 Locked':` · Unit ${curUnit}/${unitsT}`}</div>
+        <div class="level-opt-count">${words.length} words · ${unitsT} units · Unit ${curUnit}/${unitsT}</div>
       </div>
-      <div class="level-opt-pct">${locked?'–':pct+'%'}</div>
+      <div class="level-opt-pct">${pct}%</div>
     </div>`;
   }).join('');
   modal.classList.remove('hidden');
@@ -7228,8 +7233,9 @@ function hideLevelModal(e) {
   }
 }
 function selectLevel(lvl) {
-  if (!state.unlockedLevels.includes(lvl)) return;
   state.currentLevel = lvl;
+  grammarBrowseIdx = 0;
+  sentenceBrowseIdx = 0;
   document.getElementById('currentLevelBadge').textContent = lvl;
   saveState();
   hideLevelModal();
@@ -7302,7 +7308,7 @@ function renderReviewItem(el) {
 // --- Review: Vocab flashcard ---
 function renderReviewVocab(el, item, hdr) {
   const w = item.word;
-  const srsD = state.srsData[`${item.lvl}_${w.char}`] || {ease:0};
+  const srsD = state.srsData[wordKey(item.lvl,w)] || {ease:0};
   const srsLabel = ['New','Learning','Familiar','Mastered'][Math.min(3,srsD.ease)];
   el.innerHTML = hdr + `
     <span class="review-kind-tag kind-vocab">🃏 Vocab</span>
@@ -7337,11 +7343,11 @@ function rateReviewVocab(rating) {
 function renderReviewListen(el, item, hdr) {
   const w = item.word;
   const allWords = [];
-  state.unlockedLevels.forEach(lvl => getLevelAllWords(lvl).forEach(ww => allWords.push({...ww,level:lvl})));
-  const distractors = shuffle(allWords.filter(ww => ww.char !== w.char)).slice(0,3);
+  [1,2,3,4,5,6].forEach(lvl => getLevelAllWords(lvl).forEach(ww => allWords.push({...ww,level:lvl})));
+  const distractors = getDistractors(w, allWords, 3);
   const options = shuffle([w, ...distractors]);
   currentReviewListenOptions = options;
-  const lisD = state.listenSrs[`listen_${item.lvl}_${w.char}`] || {ease:0};
+  const lisD = state.listenSrs[listenKey(item.lvl, w)] || {ease:0};
   const lisLabel = ['New','Learning','Familiar','Mastered'][Math.min(3,lisD.ease)];
   el.innerHTML = hdr + `
     <span class="review-kind-tag kind-listen">👂 Listen</span>
@@ -7354,7 +7360,7 @@ function renderReviewListen(el, item, hdr) {
       </div>
     </div>
   </div>`;
-  setTimeout(() => reviewPlayWord(w.char), 400);
+  speakDelayed(w.char, 300);
 }
 function reviewPlayWord(char) {
   const btn = document.getElementById('reviewSpeakBtn');
