@@ -6679,19 +6679,27 @@ let grammarQueue = [];
 let grammarIdx = 0;
 let grammarAnswered = false;
 let grammarFilter = 'all';
-let grammarBrowseIdx = 0;  // index into all exercises for free navigation
-let currentExOptions = []; // the exact shuffled options array rendered for the current fill/error exercise
-// Reorder state
+let currentExOptions = [];
 let reorderAnswer = [];
 let reorderSource = [];
 
-function getAllExercises(type) {
+function buildGrammarQueue(filter) {
   const lvl = state.currentLevel;
   const all = GRAMMAR_EXERCISES[lvl] || [];
-  return type === 'all' ? all : all.filter(e => e.type === type);
+  const exs = filter === 'all' ? all : all.filter(e => e.type === filter);
+  const weighted = [];
+  exs.forEach(ex => {
+    const d = state.grammarData[grammarKey(ex)] || {streak:0};
+    const w = d.streak >= 2 ? 0 : d.streak === 1 ? 1 : 2;
+    for (let i=0; i<w; i++) weighted.push(ex);
+  });
+  // If everything is mastered, return all exercises unweighted so screen doesn't go blank
+  return weighted.length > 0 ? shuffle(weighted) : shuffle([...exs]);
 }
 function renderGrammar(el) {
   if (!el) el = document.getElementById('mainContent');
+  grammarQueue = buildGrammarQueue(grammarFilter);
+  grammarIdx = 0;
   grammarAnswered = false;
   reorderAnswer = [];
   reorderSource = [];
@@ -6701,35 +6709,43 @@ function renderGrammar(el) {
 function renderGrammarExercise(el) {
   if (!el) el = document.getElementById('mainContent');
   const lvl = state.currentLevel;
-  const allExs = getAllExercises(grammarFilter);
-  if (allExs.length === 0) {
+  const allForLevel = GRAMMAR_EXERCISES[lvl] || [];
+  if (allForLevel.length === 0) {
     el.innerHTML = `<div class="grammar-screen"><div class="empty-state">
       <div class="empty-icon">📝</div>
-      <div class="empty-text">No exercises available</div>
-      <div class="empty-sub">No ${grammarFilter === 'all' ? '' : grammarFilter + ' '}exercises for HSK ${lvl}.</div>
+      <div class="empty-text">No exercises yet</div>
+      <div class="empty-sub">No grammar exercises for HSK ${lvl}.</div>
     </div></div>`;
     return;
   }
-  // Clamp browse index to valid range
-  if (grammarBrowseIdx >= allExs.length) grammarBrowseIdx = allExs.length - 1;
-  if (grammarBrowseIdx < 0) grammarBrowseIdx = 0;
-  const ex = allExs[grammarBrowseIdx];
-  const total = allExs.length;
+  const filteredForLevel = grammarFilter === 'all' ? allForLevel : allForLevel.filter(e => e.type === grammarFilter);
+  const allMastered = filteredForLevel.every(ex => { const d=state.grammarData[grammarKey(ex)]; return d&&d.streak>=2; });
+  if (allMastered && filteredForLevel.length > 0) {
+    el.innerHTML = `<div class="grammar-screen"><div class="empty-state">
+      <div class="empty-icon">🎉</div>
+      <div class="empty-text">All done!</div>
+      <div class="empty-sub">You've mastered all grammar exercises for HSK ${lvl}.<br>They'll show up in Daily Review for spaced repetition.</div>
+    </div></div>`;
+    return;
+  }
+  if (grammarQueue.length === 0) grammarQueue = buildGrammarQueue(grammarFilter);
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const typeLabels = {reorder:'Reorder', fill:'Fill In', error:'Error Correction'};
   const typeColors = {reorder:'reorder', fill:'fill', error:'error'};
   const filterBtns = ['all','reorder','fill','error'].map(t =>
     `<button class="ex-chip ${typeColors[t]||'reorder'} ${grammarFilter===t?'active':'inactive'}" onclick="setGrammarFilter('${t}')">${t==='all'?'All':typeLabels[t]}</button>`
   ).join('');
   const exData = state.grammarData[grammarKey(ex)] || {streak:0};
-  const streakDots = '●'.repeat(Math.min(2,exData.streak)) + '○'.repeat(Math.max(0,2-exData.streak));
-  const mStats = getMasteryStats();
+  const streakDots = '●'.repeat(Math.min(2,exData.streak))+'○'.repeat(Math.max(0,2-exData.streak));
+  const lvlExs = GRAMMAR_EXERCISES[lvl] || [];
+  const filteredExs = grammarFilter === 'all' ? lvlExs : lvlExs.filter(e => e.type === grammarFilter);
+  const lvlMastered = filteredExs.filter(ex => { const d=state.grammarData[grammarKey(ex)]; return d&&d.streak>=2; }).length;
+  const lvlTotal = filteredExs.length;
   let exBody = '';
   if (ex.type === 'reorder') {
-    if (!grammarAnswered) {
-      if (!reorderAnswer || reorderAnswer.length === 0) {
-        reorderSource = shuffle([...ex.words]);
-        reorderAnswer = [];
-      }
+    if (!grammarAnswered && (!reorderAnswer || reorderAnswer.length === 0)) {
+      reorderSource = shuffle([...ex.words]);
+      reorderAnswer = [];
     }
     exBody = renderReorderBody(ex);
   } else if (ex.type === 'fill') {
@@ -6740,41 +6756,49 @@ function renderGrammarExercise(el) {
   el.innerHTML = `<div class="grammar-screen">
     <div class="progress-header">
       <span class="progress-text">📝 语法</span>
-      <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(mStats.grammarMastered/Math.max(1,mStats.grammarTotal)*100)}%"></div></div>
-      <span class="score-badge score-correct">${mStats.grammarMastered}/${mStats.grammarTotal}</span>
+      <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(lvlMastered/Math.max(1,lvlTotal)*100)}%"></div></div>
+      <span class="score-badge score-correct">${lvlMastered}/${lvlTotal}</span>
     </div>
     <div class="ex-type-row">${filterBtns}</div>
-    <div class="unit-selector" style="margin-bottom:12px">
-      <button class="unit-nav-btn" onclick="browseGrammar(-1)" ${grammarBrowseIdx > 0 ? '' : 'disabled'}>‹</button>
-      <span class="unit-selector-label">Exercise ${grammarBrowseIdx+1} / ${total} &nbsp; <span style="letter-spacing:2px">${streakDots}</span></span>
-      <button class="unit-nav-btn" onclick="browseGrammar(1)" ${grammarBrowseIdx < total-1 ? '' : 'disabled'}>›</button>
-    </div>
     <div class="exercise-card">
-      <div class="ex-pattern">${ex.pattern}</div>
+      <div class="ex-pattern">${ex.pattern} <span style="float:right;font-size:13px;color:var(--gray);letter-spacing:2px">${streakDots}</span></div>
       <div class="ex-instruction">${typeLabels[ex.type]} · HSK ${ex.level}</div>
       <div class="ex-translation">${ex.translation}</div>
       ${exBody}
     </div>
   </div>`;
 }
-function browseGrammar(delta) {
-  const allExs = getAllExercises(grammarFilter);
-  grammarBrowseIdx = Math.max(0, Math.min(allExs.length - 1, grammarBrowseIdx + delta));
-  grammarAnswered = false;
-  reorderAnswer = [];
-  reorderSource = [];
-  currentExOptions = [];
-  renderGrammarExercise();
-}
 function setGrammarFilter(f) {
   grammarFilter = f;
-  grammarBrowseIdx = 0;
+  grammarQueue = buildGrammarQueue(f);
+  grammarIdx = 0;
   grammarAnswered = false;
   reorderAnswer = [];
   reorderSource = [];
   currentExOptions = [];
   renderGrammarExercise();
 }
+function nextGrammar() {
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
+  const exKey = grammarKey(ex);
+  const exData = state.grammarData[exKey] || {streak:0};
+  const removeIdx = grammarIdx % grammarQueue.length;
+  if (exData.streak >= 2) {
+    grammarQueue = grammarQueue.filter(e => grammarKey(e) !== exKey);
+  } else {
+    grammarQueue.splice(removeIdx, 1);
+    const insertAt = Math.min(grammarQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
+    grammarQueue.splice(insertAt, 0, ex);
+  }
+  if (grammarQueue.length === 0) grammarQueue = buildGrammarQueue(grammarFilter);
+  if (grammarIdx >= grammarQueue.length) grammarIdx = 0;
+  grammarAnswered = false;
+  reorderAnswer = [];
+  reorderSource = [];
+  currentExOptions = [];
+  renderGrammarExercise();
+}
+
 function renderReorderBody(ex) {
   const answerTiles = reorderAnswer.map((w,i) =>
     `<div class="tile" onclick="reorderMoveBack(${i})">${w}</div>`
@@ -6815,14 +6839,14 @@ function reorderMoveBack(idx) {
   renderGrammarExercise();
 }
 function clearReorder() {
-  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
   reorderSource = shuffle([...ex.words]);
   reorderAnswer = [];
   renderGrammarExercise();
 }
 function checkReorder() {
   grammarAnswered = true;
-  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const userJoined = normalize(reorderAnswer.join(''));
   let correct = userJoined === normalize(ex.answer);
   if (!correct && ex.alternates) {
@@ -6855,7 +6879,7 @@ function renderFillBody(ex) {
 function checkFill(chosen, idx) {
   if (grammarAnswered) return;
   grammarAnswered = true;
-  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
   currentExOptions.forEach((opt, i) => {
@@ -6891,7 +6915,7 @@ function renderErrorBody(ex) {
 function checkError(chosen, idx) {
   if (grammarAnswered) return;
   grammarAnswered = true;
-  const ex = getAllExercises(grammarFilter)[grammarBrowseIdx];
+  const ex = grammarQueue[grammarIdx % grammarQueue.length];
   const correct = chosen === ex.answer;
   recordGrammar(ex, correct);
   currentExOptions.forEach((opt, i) => {
@@ -6914,9 +6938,6 @@ function getResultBannerRaw(correct, ex) {
   return `<div class="result-banner wrong mt12">✗ Not quite<div class="result-answer">✓ ${ex.answer}</div>${pinyinLine}</div>`;
 }
 function getResultBanner(correct, ex) { return getResultBannerRaw(correct, ex); }
-function nextGrammar() {
-  browseGrammar(1);
-}
 
 // ===== LISTENING =====
 let listenQueue = [];
@@ -7100,42 +7121,59 @@ function nextListen() {
 let sentenceQueue = [];
 let sentenceIdx = 0;
 let sentenceAnswered = false;
-let sentenceBrowseIdx = 0;  // index into all sentences for free navigation
+
+function buildSentenceQueue() {
+  const lvl = state.currentLevel;
+  const exs = SENTENCE_EXERCISES[lvl] || [];
+  const weighted = [];
+  exs.forEach(ex => {
+    const d = state.sentenceData[sentenceKey(ex)] || {streak:0};
+    const w = d.streak >= 2 ? 0 : d.streak === 1 ? 1 : 2;
+    for (let i=0; i<w; i++) weighted.push(ex);
+  });
+  return weighted.length > 0 ? shuffle(weighted) : shuffle([...exs]);
+}
 function renderSentence(el) {
   if (!el) el = document.getElementById('mainContent');
+  sentenceQueue = buildSentenceQueue();
+  sentenceIdx = 0;
   sentenceAnswered = false;
   renderSentenceCard(el);
 }
 function renderSentenceCard(el) {
   if (!el) el = document.getElementById('mainContent');
   const lvl = state.currentLevel;
-  const allExs = SENTENCE_EXERCISES[lvl] || [];
-  if (allExs.length === 0) {
+  if (!(SENTENCE_EXERCISES[lvl] || []).length) {
     el.innerHTML = `<div class="sentence-screen"><div class="empty-state">
       <div class="empty-icon">✍️</div><div class="empty-text">No exercises yet</div>
     </div></div>`;
     return;
   }
-  if (sentenceBrowseIdx >= allExs.length) sentenceBrowseIdx = allExs.length - 1;
-  if (sentenceBrowseIdx < 0) sentenceBrowseIdx = 0;
-  const ex = allExs[sentenceBrowseIdx];
-  const total = allExs.length;
-  const mStats = getMasteryStats();
+  const sExsAll = SENTENCE_EXERCISES[lvl] || [];
+  const allSMastered = sExsAll.every(ex => { const d=state.sentenceData[sentenceKey(ex)]; return d&&d.streak>=2; });
+  if (allSMastered) {
+    el.innerHTML = `<div class="sentence-screen"><div class="empty-state">
+      <div class="empty-icon">🎉</div>
+      <div class="empty-text">All done!</div>
+      <div class="empty-sub">You've mastered all sentence exercises for HSK ${lvl}.<br>They'll show up in Daily Review for spaced repetition.</div>
+    </div></div>`;
+    return;
+  }
+  if (sentenceQueue.length === 0) sentenceQueue = buildSentenceQueue();
+  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  const sExs = SENTENCE_EXERCISES[lvl] || [];
+  const sMastered = sExs.filter(ex => { const d=state.sentenceData[sentenceKey(ex)]; return d&&d.streak>=2; }).length;
+  const sTotal = sExs.length;
   const exData = state.sentenceData[sentenceKey(ex)] || {streak:0};
-  const streakDots = '●'.repeat(Math.min(2,exData.streak)) + '○'.repeat(Math.max(0,2-exData.streak));
+  const streakDots = '●'.repeat(Math.min(2,exData.streak))+'○'.repeat(Math.max(0,2-exData.streak));
   el.innerHTML = `<div class="sentence-screen">
     <div class="progress-header">
       <span class="progress-text">✍️ 造句</span>
-      <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(mStats.sentenceMastered/Math.max(1,mStats.sentenceTotal)*100)}%"></div></div>
-      <span class="score-badge score-correct">${mStats.sentenceMastered}/${mStats.sentenceTotal}</span>
-    </div>
-    <div class="unit-selector" style="margin-bottom:12px">
-      <button class="unit-nav-btn" onclick="browseSentence(-1)" ${sentenceBrowseIdx > 0 ? '' : 'disabled'}>‹</button>
-      <span class="unit-selector-label">Exercise ${sentenceBrowseIdx+1} / ${total} &nbsp; <span style="letter-spacing:2px">${streakDots}</span></span>
-      <button class="unit-nav-btn" onclick="browseSentence(1)" ${sentenceBrowseIdx < total-1 ? '' : 'disabled'}>›</button>
+      <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(sMastered/Math.max(1,sTotal)*100)}%"></div></div>
+      <span class="score-badge score-correct">${sMastered}/${sTotal}</span>
     </div>
     <div class="sentence-prompt">
-      <div class="prompt-label">Translate to Chinese</div>
+      <div class="prompt-label">Translate to Chinese <span style="float:right;letter-spacing:2px;color:var(--gray)">${streakDots}</span></div>
       <div class="prompt-english">${ex.english}</div>
       <div class="prompt-hint">💡 ${ex.hint}</div>
     </div>
@@ -7150,13 +7188,6 @@ function renderSentenceCard(el) {
     setTimeout(() => { const inp = document.getElementById('chineseInput'); if(inp) inp.focus(); }, 100);
   }
 }
-function browseSentence(delta) {
-  const lvl = state.currentLevel;
-  const allExs = SENTENCE_EXERCISES[lvl] || [];
-  sentenceBrowseIdx = Math.max(0, Math.min(allExs.length - 1, sentenceBrowseIdx + delta));
-  sentenceAnswered = false;
-  renderSentenceCard();
-}
 function renderSentenceResult(ex) {
   return `<div class="answer-reveal">
     <div class="answer-label">✓ Model Answer</div>
@@ -7169,9 +7200,7 @@ function renderSentenceResult(ex) {
 function checkSentence() {
   const inp = document.getElementById('chineseInput');
   if (!inp || !inp.value.trim()) return;
-  const lvl = state.currentLevel;
-  const ex = (SENTENCE_EXERCISES[lvl] || [])[sentenceBrowseIdx];
-  if (!ex) return;
+  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
   const correct = checkAnswer(inp.value, ex);
   sentenceAnswered = true;
   recordSentence(ex, correct);
@@ -7185,15 +7214,13 @@ function checkSentence() {
   if (showBtn) showBtn.remove();
   const banner = document.createElement('div');
   banner.className = `result-banner ${correct?'correct':'wrong'}`;
-  banner.innerHTML = correct ? '✓ Correct!' : `✗ Not quite — see the answer below`;
+  banner.innerHTML = correct ? '✓ Correct!' : '✗ Not quite — see the answer below';
   screen.appendChild(banner);
   screen.insertAdjacentHTML('beforeend', renderSentenceResult(ex));
 }
 function showSentenceAnswer() {
   sentenceAnswered = true;
-  const lvl = state.currentLevel;
-  const ex = (SENTENCE_EXERCISES[lvl] || [])[sentenceBrowseIdx];
-  if (!ex) return;
+  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
   const screen = document.querySelector('.sentence-screen');
   if (!screen) return;
   const inputArea = screen.querySelector('textarea');
@@ -7205,8 +7232,23 @@ function showSentenceAnswer() {
   screen.insertAdjacentHTML('beforeend', renderSentenceResult(ex));
 }
 function nextSentence() {
-  browseSentence(1);
+  const ex = sentenceQueue[sentenceIdx % sentenceQueue.length];
+  const exKey = sentenceKey(ex);
+  const exData = state.sentenceData[exKey] || {streak:0};
+  const removeIdx = sentenceIdx % sentenceQueue.length;
+  if (exData.streak >= 2) {
+    sentenceQueue = sentenceQueue.filter(e => sentenceKey(e) !== exKey);
+  } else {
+    sentenceQueue.splice(removeIdx, 1);
+    const insertAt = Math.min(sentenceQueue.length, removeIdx + 2 + Math.floor(Math.random()*2));
+    sentenceQueue.splice(insertAt, 0, ex);
+  }
+  if (sentenceQueue.length === 0) sentenceQueue = buildSentenceQueue();
+  if (sentenceIdx >= sentenceQueue.length) sentenceIdx = 0;
+  sentenceAnswered = false;
+  renderSentenceCard();
 }
+
 
 // ===== LEVEL MODAL =====
 function showLevelModal() {
@@ -7234,8 +7276,8 @@ function hideLevelModal(e) {
 }
 function selectLevel(lvl) {
   state.currentLevel = lvl;
-  grammarBrowseIdx = 0;
-  sentenceBrowseIdx = 0;
+  grammarQueue = [];
+  sentenceQueue = [];
   document.getElementById('currentLevelBadge').textContent = lvl;
   saveState();
   hideLevelModal();
