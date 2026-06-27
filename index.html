@@ -6123,11 +6123,29 @@ function isUnitMastered(lvl, unitNum) {
   }).length;
   return (mastered / words.length) >= 0.80;
 }
+function isListenUnitMastered(lvl, unitNum) {
+  const words = getUnitWords(lvl, unitNum);
+  if (words.length === 0) return false;
+  const mastered = words.filter(w => {
+    const d = state.listenSrs[`listen_${lvl}_${w.char}`];
+    return d && d.reps >= 2;
+  }).length;
+  return (mastered / words.length) >= 0.80;
+}
 function unitProgress(lvl, unitNum) {
   const words = getUnitWords(lvl, unitNum);
   if (words.length === 0) return {mastered:0, total:0};
   const mastered = words.filter(w => {
     const d = state.srsData[`${lvl}_${w.char}`];
+    return d && d.reps >= 2;
+  }).length;
+  return {mastered, total: words.length};
+}
+function listenUnitProgress(lvl, unitNum) {
+  const words = getUnitWords(lvl, unitNum);
+  if (words.length === 0) return {mastered:0, total:0};
+  const mastered = words.filter(w => {
+    const d = state.listenSrs[`listen_${lvl}_${w.char}`];
     return d && d.reps >= 2;
   }).length;
   return {mastered, total: words.length};
@@ -6527,28 +6545,31 @@ function renderHome(el) {
 let vocabDeck = [];
 let vocabIdx = 0;
 let vocabFlipped = false;
-function unitSelectorHTML(lvl) {
+function unitSelectorHTML(lvl, mode) {
+  // mode: 'vocab' or 'listen'
   const cur = getCurrentUnit(lvl);
   const total = getUnitCount(lvl);
-  const prog = unitProgress(lvl, cur);
+  const isListen = mode === 'listen';
+  const prog = isListen ? listenUnitProgress(lvl, cur) : unitProgress(lvl, cur);
   const canPrev = cur > 1;
-  const canNext = cur < total && isUnitMastered(lvl, cur);
+  const canNext = cur < total && (isListen ? isListenUnitMastered(lvl, cur) : isUnitMastered(lvl, cur));
   return `<div class="unit-selector">
-    <button class="unit-nav-btn" onclick="changeUnit(-1)" ${canPrev?'':'disabled'}>‹</button>
+    <button class="unit-nav-btn" onclick="changeUnit(-1,'${mode}')" ${canPrev?'':'disabled'}>‹</button>
     <span class="unit-selector-label">Unit ${cur} / ${total} &nbsp; (${prog.mastered}/${prog.total} mastered)</span>
-    <button class="unit-nav-btn" onclick="changeUnit(1)" ${canNext?'':'disabled'}>›</button>
+    <button class="unit-nav-btn" onclick="changeUnit(1,'${mode}')" ${canNext?'':'disabled'}>›</button>
   </div>`;
 }
-function changeUnit(delta) {
+function changeUnit(delta, mode) {
   const lvl = state.currentLevel;
   const cur = getCurrentUnit(lvl);
   const total = getUnitCount(lvl);
   const target = cur + delta;
   if (target < 1 || target > total) return;
-  if (delta > 0 && !isUnitMastered(lvl, cur)) return; // can't skip ahead unless mastered
+  const isListen = mode === 'listen';
+  if (delta > 0 && !(isListen ? isListenUnitMastered(lvl, cur) : isUnitMastered(lvl, cur))) return;
   state.currentUnit[lvl] = target;
   saveState();
-  navigate(currentPage); // re-render current page (vocab or listen)
+  navigate(currentPage);
 }
 
 function renderVocab(el) {
@@ -6576,7 +6597,7 @@ function renderVocabCard(el) {
   const lvl = state.currentLevel;
   if (total === 0) {
     el.innerHTML = `<div class="card-screen">
-    ${unitSelectorHTML(lvl)}
+    ${unitSelectorHTML(lvl, 'vocab')}
     <div class="empty-state">
       <div class="empty-icon">🎉</div>
       <div class="empty-text">Unit complete!</div>
@@ -6595,7 +6616,7 @@ function renderVocabCard(el) {
        </div>`
     : `<div class="tap-hint">tap to reveal</div>`;
   el.innerHTML = `<div class="card-screen">
-    ${unitSelectorHTML(lvl)}
+    ${unitSelectorHTML(lvl, 'vocab')}
     <div class="progress-header">
       <span class="progress-text">${vocabIdx+1}/${total}</span>
       <div class="mini-progress"><div class="mini-fill" style="width:${pct}%"></div></div>
@@ -6948,11 +6969,11 @@ function renderListenCard(el) {
   const lvl = state.currentLevel;
   if (!listenQueue || listenQueue.length === 0) {
     el.innerHTML = `<div class="listen-screen">
-    ${unitSelectorHTML(lvl)}
+    ${unitSelectorHTML(lvl, 'listen')}
     <div class="empty-state">
       <div class="empty-icon">🎉</div>
       <div class="empty-text">Unit complete!</div>
-      <div class="empty-sub">All words in this unit are mastered for listening.<br>${getCurrentUnit(lvl) < getUnitCount(lvl) && isUnitMastered(lvl, getCurrentUnit(lvl)) ? 'Tap › above to move to the next unit.' : 'Come back later for spaced review.'}</div>
+      <div class="empty-sub">All words in this unit are mastered for listening.<br>${getCurrentUnit(lvl) < getUnitCount(lvl) && isListenUnitMastered(lvl, getCurrentUnit(lvl)) ? 'Tap › above to move to the next unit.' : 'Come back later for spaced review.'}</div>
     </div></div>`;
     return;
   }
@@ -6980,7 +7001,7 @@ function renderListenCard(el) {
   }
   const m = getMasteryStats();
   el.innerHTML = `<div class="listen-screen">
-    ${unitSelectorHTML(lvl)}
+    ${unitSelectorHTML(lvl, 'listen')}
     <div class="progress-header">
       <span class="progress-text">👂 听力</span>
       <div class="mini-progress"><div class="mini-fill" style="width:${Math.round(m.listenMastered/Math.max(1,m.listenTotal)*100)}%"></div></div>
